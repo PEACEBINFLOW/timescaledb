@@ -1,0 +1,63 @@
+```sql
+-- Enable required extensions (adjust if already enabled at DB level)
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Main MindsEye events table
+CREATE TABLE IF NOT EXISTS mindseye_events (
+    id              BIGSERIAL PRIMARY KEY,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Who/what generated the event
+    actor_id        TEXT,
+    actor_type      TEXT,           -- e.g. "user", "agent", "system"
+
+    -- Where in the system this came from
+    source          TEXT,           -- e.g. "api", "cli", "worker"
+    channel         TEXT,           -- e.g. "law-n-sql-core", "trading-bot", "ui"
+
+    -- High-level tagging & labeling
+    label           TEXT,           -- e.g. "prompt", "decision", "error"
+    tags            TEXT[] DEFAULT '{}',
+
+    -- Rich payload
+    payload         JSONB,          -- arbitrary cognitive/event data
+
+    -- Scalar scores
+    importance      NUMERIC(5,2),   -- 0.00–1.00 importance
+    confidence      NUMERIC(5,2),   -- model/system confidence
+
+    -- Free-text field used for trigram similarity search
+    similarity_text TEXT
+);
+
+-- Turn into a hypertable on created_at
+SELECT create_hypertable(
+    'mindseye_events',
+    'created_at',
+    if_not_exists => TRUE
+);
+
+-- Indexes
+
+-- Fast time-ordered queries (default for hypertables, but we add some helpers)
+CREATE INDEX IF NOT EXISTS idx_mindseye_events_created_at
+    ON mindseye_events (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_mindseye_events_actor
+    ON mindseye_events (actor_id, actor_type);
+
+CREATE INDEX IF NOT EXISTS idx_mindseye_events_channel
+    ON mindseye_events (channel, label);
+
+-- GIN index on tags for filtering
+CREATE INDEX IF NOT EXISTS idx_mindseye_events_tags_gin
+    ON mindseye_events USING GIN (tags);
+
+-- Trigram index for semantic-ish search over similarity_text
+CREATE INDEX IF NOT EXISTS idx_mindseye_events_similarity_trgm
+    ON mindseye_events USING GIN (similarity_text gin_trgm_ops);
+
+-- Optional: retention policy (adjust window as you like)
+-- This requires TimescaleDB background jobs to be enabled.
+-- SELECT add_retention_policy('mindseye_events', INTERVAL '180 days');
